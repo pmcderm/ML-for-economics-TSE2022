@@ -8,6 +8,7 @@ library(plm)
 library(stargazer)
 library(gbm)
 library(plotmo)
+library(caret)
 
 # Set Directory
 
@@ -103,7 +104,10 @@ school_df <- na.omit(school_df)
 # REEM Tree Replication
 #######################
 set.seed(22234110)
-treeREEM <- REEMtree(math_PV ~ Gender + ESCS + IMMIG + MathHW + ParentalEduc + VideoGames + Sports + DiscClimate + TEACHSUP + MMINS + BELONG + MOTIVAT + ANXTEST + COOPERATE + EMOSUPS + CULTPOSS + HEDRES,
+treeREEM <- REEMtree(math_PV ~ Gender + ESCS + factor(IMMIG) + MathHW + 
+                       ParentalEduc + VideoGames + Sports + DiscClimate + 
+                       TEACHSUP + MMINS + BELONG + MOTIVAT + ANXTEST + 
+                       COOPERATE + EMOSUPS + CULTPOSS + HEDRES,
                   data = students_df, random = ~1|SchoolID)
 
 plot(treeREEM)
@@ -125,9 +129,11 @@ school_df_ints <- inner_join(school_df, treeREints, by = 'SchoolID')
 # FE Regression
 #######################
 
-# do we have to do stuff for factor variables
 
-regFE <- plm(math_PV ~ factor(Gender) + ESCS + factor(IMMIG) + MathHW + ParentalEduc + VideoGames + Sports + DiscClimate + TEACHSUP + MMINS + BELONG + MOTIVAT + ANXTEST + COOPERATE + EMOSUPS + CULTPOSS + HEDRES,
+regFE <- plm(math_PV ~ factor(Gender) + ESCS + factor(IMMIG) + MathHW + 
+               ParentalEduc + VideoGames + Sports + DiscClimate + TEACHSUP + 
+               MMINS + BELONG + MOTIVAT + ANXTEST + COOPERATE + EMOSUPS + 
+               CULTPOSS + HEDRES,
              data = students_df, model = c("within"), index = "SchoolID")
 
 summary(regFE)
@@ -151,104 +157,58 @@ cor(school_df_ints$FixedEffectReg, school_df_ints$RandEffectREEM)
 plot(school_df_ints$FixedEffectReg, school_df_ints$RandEffectREEM)
 
 ################
-# Test-train
-################
-
-# get number of rows that will be in test and train respectively
-num_test <- ceiling(nrow(school_df_ints)*0.7)
-num_train <- nrow(school_df_ints) - num_test
-
-# sample from school dataframe to create training and testing sample
-train_schools = school_df_ints %>%
-  sample_n(num_test)
-
-test_schools = school_df_ints %>%
-  setdiff(train_schools)
-
-################
 # Random Forests
 ################
 
-# For the REEM trees, we extend the paper by tuning mtry i.e. the number
+# we extend the paper by tuning mtry i.e. the number
 # of covariates kept by the random forest at each split (with fixed values for 
-# the other hyper-parameters). First, we train 5 random forests with 5 different
-# mtry values
-REEM_forest_m2 <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
-                               data=train_schools,
-                               mtry = 2,
-                               importance = TRUE)
-REEM_forest_m3 <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
-                               data=train_schools,
-                               mtry = 3,
-                               importance = TRUE)
-REEM_forest_m5 <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
-                               data=train_schools,
-                               mtry = 5,
-                               importance = TRUE)
-REEM_forest_m7 <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
-                               data=train_schools,
-                               mtry = 7,
-                               importance = TRUE)
-REEM_forest_m9 <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
-                               data=train_schools,
-                               mtry = 9,
-                               importance = TRUE)
-REEM_forest_m11 <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
-                               data=train_schools,
-                               mtry = 11,
-                               importance = TRUE)
-REEM_forest_m13 <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
-                                data=train_schools,
-                                mtry = 13,
-                                importance = TRUE)
+# the other hyper-parameters). Method: k-fold cross-validation
 
-# estimate on test set with each trained tree
-forest_estimate_m2 = predict(REEM_forest_m2, 
-                             newdata = test_schools)
-forest_estimate_m3 = predict(REEM_forest_m3, 
-                             newdata = test_schools)
-forest_estimate_m5 = predict(REEM_forest_m5, 
-                            newdata = test_schools)
-forest_estimate_m7 = predict(REEM_forest_m7, 
-                            newdata = test_schools)
-forest_estimate_m9 = predict(REEM_forest_m9, 
-                            newdata = test_schools)
-forest_estimate_m11 = predict(REEM_forest_m11, 
-                            newdata = test_schools)
-forest_estimate_m13 = predict(REEM_forest_m13, 
-                            newdata = test_schools)
+# REEM Tree cross-validation
+# Set the number of folds for cross-validation
+nfolds <- 10
 
-# calculate MSE and observe minium (mtry = 2)
-mean((forest_estimate_m2 - test_schools$RandEffectREEM)^2)
-mean((forest_estimate_m3 - test_schools$RandEffectREEM)^2)
-mean((forest_estimate_m5 - test_schools$RandEffectREEM)^2)
-mean((forest_estimate_m7 - test_schools$RandEffectREEM)^2)
-mean((forest_estimate_m9 - test_schools$RandEffectREEM)^2)
-mean((forest_estimate_m11 - test_schools$RandEffectREEM)^2)
-mean((forest_estimate_m13 - test_schools$RandEffectREEM)^2)
+# Set the range of mtry values to test
+num_variables = ncol(select(school_df_ints,-c(SchoolID, RandEffectREEM, 
+                                              CNT, FixedEffectReg)))
+mtry_values <- seq(1,num_variables,1)
+
+# break data into x and y
+x_school_df <- select(school_df_ints,-c(SchoolID, RandEffectREEM, CNT, 
+                                        FixedEffectReg))
+y_school_REEM_df <-school_df_ints$RandEffectREEM
+
+# Perform cross-validation
+rf_reem_cv <- train(x = x_school_df, y = y_school_REEM_df,
+                 method = "rf",
+                 trControl = trainControl(method = "cv", number = nfolds),
+                 tuneGrid = expand.grid(mtry = mtry_values))
+print(rf_reem_cv$bestTune$mtry)
+
 
 # use tuned mtry to build "optimal" random forest on full data
 REEM_forest_opt <- randomForest(RandEffectREEM ~ . -SchoolID - FixedEffectReg - CNT, 
                                 data=school_df_ints,
-                                mtry = 2,
+                                mtry = rf_reem_cv$bestTune$mtry,
                                 importance = TRUE)
 
-# fit random forest on fixed effect in training sample to get MSE on test sample
-# for comparison
-FE_forest_train <- randomForest(FixedEffectReg ~ . -SchoolID - RandEffectREEM - CNT, 
-                              data= train_schools,
-                              mtry = 2,
-                              importance = TRUE)
-FE_forest_estimate = predict(FE_forest_train, 
-                              newdata = test_schools)
-mean((FE_forest_estimate - test_schools$FixedEffectReg)^2)
+# FE Tree cross-validation
+# y data will be the fixed effect column this time
+y_school_FE_df <- school_df_ints$FixedEffectReg
 
+# TODO Perform cross-validation
+#rf_fe_cv <- train(x = x_school_df, y = y_school_FE_df,
+#                    method = "rf",
+#                    trControl = trainControl(method = "cv", number = nfolds),
+#                    tuneGrid = expand.grid(mtry = mtry_values))
+# why the error, this isn't classification?
+#print(rf_fe_cv$bestTune$mtry)
 
 # use tuned mtry to build random forest on full data, this time with fixed
-# effects from linear fe model, using mtry=2
+# effects from linear fe model, using optimal mtry from REEM
 FE_forest_opt <- randomForest(FixedEffectReg ~ . -SchoolID - RandEffectREEM - CNT, 
                               data=school_df_ints,
-                              mtry = 2,
+                              mtry = rf_reem_cv$bestTune$mtry,
                               importance = TRUE)
 
 # Data for graphs comparing variable importance for each stage 1 effects type
@@ -265,12 +225,17 @@ FE_forest_varimp <- FE_forest_varimp %>% arrange(IncNodePurity)
 
 # Partial dependence plots
 par(mfrow = c(1,2))
-partialPlot(REEM_forest_opt, pred.data = school_df_ints, x.var = "DisadvStudsNum", main = "Stage 1: Regression Tree", xlab = "% Disadvantaged Students")
-partialPlot(FE_forest_opt, pred.data = school_df_ints, x.var = "DisadvStudsNum", main = "Stage 1: FE Regression", xlab = "% Disadvantaged Students")
+partialPlot(REEM_forest_opt, pred.data = school_df_ints, 
+            x.var = "DisadvStudsNum", main = "Stage 1: Regression Tree", 
+            xlab = "% Disadvantaged Students")
+partialPlot(FE_forest_opt, pred.data = school_df_ints, x.var = "DisadvStudsNum", 
+            main = "Stage 1: FE Regression", xlab = "% Disadvantaged Students")
 
 ################
 # Boosting
 ################
+
+# TODO replace test train with cross-validation
 
 # For the REEM trees, we extend the paper by tuning interaction depth
 # with fixed values for the other hyper-parameters. First, we train 7 boosting
